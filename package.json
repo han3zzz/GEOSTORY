@@ -5,7 +5,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "server": "tsx watch server.ts"
+    "server": "tsx watch server.ts",
+    "start": "node --loader tsx/esm server.ts",
+    "render:build": "npm install && npm run build",
+    "render:start": "node --loader tsx/esm server.ts"
   },
   "dependencies": {
     "@aptos-labs/ts-sdk": "^1.33.1",
