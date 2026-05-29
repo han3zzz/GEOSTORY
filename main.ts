@@ -421,7 +421,7 @@ async function tryAutoReconnect(): Promise<void> {
       imageBase64: data.image ?? undefined,
     };
 
-    const res = await fetch("/api/stories", {
+    const res = await fetch("https://geostory-0wfq.onrender.com/api/stories", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify(payload),
@@ -443,7 +443,7 @@ async function tryAutoReconnect(): Promise<void> {
 ════════════════════════════════════════ */
 export async function loadStoriesFromShelby(accountAddress: string): Promise<any[]> {
   try {
-    const res  = await fetch("/api/stories");
+    const res  = await fetch("https://geostory-0wfq.onrender.com/api/stories");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
     const data = JSON.parse(text);
@@ -575,7 +575,7 @@ if (SERVER_ACCOUNT) {
     setTimeout(async () => {
       toast("⏳ Loading stories from Shelby...");
       try {
-        const res  = await fetch("/api/stories");
+        const res  = await fetch("https://geostory-0wfq.onrender.com/api/stories");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = JSON.parse(await res.text());
         if (Array.isArray(data.stories) && data.stories.length) {
