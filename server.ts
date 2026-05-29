@@ -23,12 +23,21 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// serve vite build
-app.use(express.static(path.join(__dirname, "dist")));
+const distPath = path.join(__dirname, "dist");
 
-// SPA fallback
+// serve static assets first
+app.use(express.static(distPath));
+
+// api routes here
+// app.use("/api", apiRouter);
+
+// fallback ONLY for non-file routes
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "dist", "index.html"));
+  if (req.path.includes(".")) {
+    return res.status(404).end();
+  }
+
+  res.sendFile(path.join(distPath, "index.html"));
 });
 
 app.set("trust proxy", 1);
