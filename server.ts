@@ -586,21 +586,6 @@ app.get("/api/geocode/search", async (req, res) => {
   }
 });
 
-// ─── Serve Vite build (production) ───────────────────────────────────────────
-
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DIST      = path.join(__dirname, "dist");
-
-// Serve static assets built by `vite build`
-app.use(express.static(DIST));
-
-// SPA fallback — any non-API route → index.html
-app.get(/^(?!\/api\/).*/, (_req, res) => {
-  res.sendFile(path.join(DIST, "index.html"));
-});
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
