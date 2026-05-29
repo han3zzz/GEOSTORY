@@ -4,6 +4,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import {
   Account,
@@ -17,6 +19,17 @@ import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
 // ─── App setup ───────────────────────────────────────────────────────────────
 
 const app = express();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// serve vite build
+app.use(express.static(path.join(__dirname, "dist")));
+
+// SPA fallback
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
+});
 
 app.set("trust proxy", 1);
 app.use(cors());
