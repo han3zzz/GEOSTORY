@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: geostory
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: node --loader tsx/esm server.ts
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: VITE_SHELBY_API_KEY
+        sync: false
+      - key: VITE_SHELBY_ACCOUNT_ADDRESS
+        sync: false
+      - key: VITE_SHELBY_ACCOUNT_PRIVATE_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
