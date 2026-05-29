@@ -1067,7 +1067,7 @@ async function loadLikesForStories() {
             // Timeout 4s mỗi request — không để treo cả trang
             const ctrl  = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), 4000);
-            const r     = await fetch(`/api/stories/${s.id}/likes`, { signal: ctrl.signal });
+            const r     = await fetch(`https://geostory-0wfq.onrender.com/api/stories/${s.id}/likes`, { signal: ctrl.signal });
             clearTimeout(timer);
 
             if (!r.ok) return; // 404 or error → keep likes = 0
@@ -1111,7 +1111,7 @@ async function likeStory(id) {
 
   // Persist lên server
   try {
-    const r = await fetch(`/api/stories/${id}/like`, {
+    const r = await fetch(`https://geostory-0wfq.onrender.com/api/stories/${id}/like`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ wallet: S.walletAddr }),
@@ -1164,7 +1164,7 @@ async function loadComments(storyId) {
   try {
     const ctrl  = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 5000);
-    const r     = await fetch(`/api/stories/${storyId}/comments`, { signal: ctrl.signal });
+    const r     = await fetch(`https://geostory-0wfq.onrender.com/api/stories/${storyId}/comments`, { signal: ctrl.signal });
     clearTimeout(timer);
     if (!r.ok) return [];
     const data = await r.json();
@@ -1255,7 +1255,7 @@ async function submitComment() {
   btn.textContent = '...posting';
 
   try {
-    const r = await fetch(`/api/stories/${storyId}/comments`, {
+    const r = await fetch(`https://geostory-0wfq.onrender.com/api/stories/${storyId}/comments`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ wallet: S.walletAddr, text }),
@@ -1658,7 +1658,7 @@ init();
 
     showLoading();
     try {
-      const url = `/api/geocode/search?q=${encodeURIComponent(q)}&limit=6`;
+      const url = `https://geostory-0wfq.onrender.com/api/geocode/search?q=${encodeURIComponent(q)}&limit=6`;
       const res  = await fetch(url);
       const data = await res.json();
       if (!data.length) { showEmpty(q); return; }
@@ -1817,7 +1817,7 @@ async function askCompanion(userMessage) {
     .slice(0, 5)
     .map(s => ({ title: s.title, desc: s.desc, mood: s.mood, cat: s.cat, author: s.author }));
 
-  const res = await fetch("/api/ai/companion", {
+  const res = await fetch("https://geostory-0wfq.onrender.com/api/ai/companion", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1873,7 +1873,7 @@ function _aiUpdateLocation() {
   const c   = map.getCenter();
   const locEl = document.getElementById('aiLoc');
 
-  fetch(`/api/geocode/reverse?lat=${c.lat}&lon=${c.lng}`)
+  fetch(`https://geostory-0wfq.onrender.com/api/geocode/reverse?lat=${c.lat}&lon=${c.lng}`)
     .then(r => {
       if (!r.ok) throw new Error('geocode ' + r.status);
       return r.json();
@@ -1982,7 +1982,7 @@ async function aiSend() {
       lng:    s.lng,
     }));
 
-    const res = await fetch('/api/ai/companion', {
+    const res = await fetch('https://geostory-0wfq.onrender.com/api/ai/companion', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
