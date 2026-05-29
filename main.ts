@@ -208,13 +208,20 @@ function renderWalletOptions(): void {
 (window as any).renderWalletOptions = renderWalletOptions;
 
 (function initWalletListener() {
-  const { on } = getAptosWallets();
-  const rerender = () => {
-    const modal = document.getElementById("walletModal");
-    if (modal?.classList.contains("open")) renderWalletOptions();
-  };
-  on("register",   rerender);
-  on("unregister", rerender);
+  // Defer để tránh race condition khi module wallet-standard chưa init xong
+  setTimeout(() => {
+    try {
+      const { on } = getAptosWallets();
+      const rerender = () => {
+        const modal = document.getElementById("walletModal");
+        if (modal?.classList.contains("open")) renderWalletOptions();
+      };
+      on("register",   rerender);
+      on("unregister", rerender);
+    } catch (e) {
+      console.warn("[GeoStory] wallet listener init failed:", e);
+    }
+  }, 0);
 })();
 
 /* ════════════════════════════════════════
