@@ -4,8 +4,6 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
-import path from "path";
-import { fileURLToPath } from "url";
 
 import {
   Account,
@@ -19,26 +17,6 @@ import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
 // ─── App setup ───────────────────────────────────────────────────────────────
 
 const app = express();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const distPath = path.join(__dirname, "dist");
-
-// serve static assets first
-app.use(express.static(distPath));
-
-// api routes here
-// app.use("/api", apiRouter);
-
-// fallback ONLY for non-file routes
-app.get("*", (req, res) => {
-  if (req.path.includes(".")) {
-    return res.status(404).end();
-  }
-
-  res.sendFile(path.join(distPath, "index.html"));
-});
 
 app.set("trust proxy", 1);
 app.use(cors());
@@ -606,6 +584,22 @@ app.get("/api/geocode/search", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: "Geocode search failed" });
   }
+});
+
+// ─── Serve Vite build (production) ───────────────────────────────────────────
+
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIST      = path.join(__dirname, "dist");
+
+// Serve static assets built by `vite build`
+app.use(express.static(DIST));
+
+// SPA fallback — any non-API route → index.html
+app.get(/^(?!\/api\/).*/, (_req, res) => {
+  res.sendFile(path.join(DIST, "index.html"));
 });
 
 // ─── Start ───────────────────────────────────────────────────────────────────
