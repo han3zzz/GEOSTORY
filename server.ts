@@ -560,7 +560,14 @@ app.post("/api/stories", async (req, res) => {
       tier:        effectiveTier(tierSub), // snapshot at publish time — used to render badge
     };
 
-    await shelbyUpload(blobName, post);
+    try {
+      await shelbyUpload(blobName, post);
+    } catch (uploadErr) {
+      // Upload thất bại — hoàn lại quota vừa trừ, đừng để user mất 1 lượt
+      // free-story trong ngày mà bài không thực sự được đăng.
+      await refundStoryQuota(walletForQuota);
+      throw uploadErr;
+    }
     invalidateStoriesCache();
 
     res.json({
@@ -854,8 +861,10 @@ app.post("/api/ai/companion", async (req, res) => {
     if (quotaError) return res.status(403).json({ error: quotaError, upgradeRequired: true });
 
     const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey)
+    if (!apiKey) {
+      await refundAiQuota(wallet);
       return res.status(500).json({ error: "GROQ_API_KEY has not been configured." });
+    }
 
     // ── Build context strings ──
     const place   = context?.placeName ?? "area being viewed";
@@ -917,19 +926,25 @@ Rules:
 
     if (!groqRes.ok) {
       console.error("[AI companion] Groq error:", groqData);
+      await refundAiQuota(wallet);
       return res.status(502).json({
         error: "Groq API error: " + (groqData?.error?.message ?? groqRes.status),
       });
     }
 
     const reply = groqData.choices?.[0]?.message?.content ?? "";
-    if (!reply)
+    if (!reply) {
+      await refundAiQuota(wallet);
       return res.status(502).json({ error: "No response from AI" });
+    }
 
     res.json({ reply });
 
   } catch (err) {
     console.error("[POST /api/ai/companion]", err);
+    // wallet có thể chưa được parse nếu lỗi xảy ra trước khi đọc body —
+    // req.body?.wallet an toàn hơn biến `wallet` (có thể chưa khai báo ở scope này).
+    if (req.body?.wallet) await refundAiQuota(req.body.wallet).catch(() => {});
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -1296,8 +1311,27 @@ async function checkAndConsumeStoryQuota(wallet: string): Promise<string | null>
   }
   sub.storyUsage.count++;
   subsCache.set(wallet.toLowerCase(), sub);
-  persistSub(sub).catch(err => console.error("[quota] story usage persist failed:", err));
+  // KHÔNG ghi lên Shelby ở đây — persistSub() luôn tạo 1 blob MỚI (Shelby
+  // không cho ghi đè), nên nếu ghi mỗi lần tăng quota thì mỗi story đăng lên
+  // sẽ tạo thêm 1 blob "geostory_sub_..." vĩnh viễn chỉ để lưu 1 con số đếm.
+  // Counter chỉ cần sống trong bộ nhớ của phiên chạy hiện tại để chặn spam;
+  // dữ liệu THỰC SỰ quan trọng (tier, expiresAt, txHash, showAds) đã được
+  // ghi đúng lúc ở /api/subscribe và /api/settings/ads. Trade-off: nếu
+  // server restart, storyUsage.count reset về 0 — tối đa user được thêm vài
+  // lượt free/ngày, không phải lỗi nghiêm trọng.
   return null;
+}
+
+// Hoàn lại 1 lượt story-quota đã trừ, dùng khi bước sau (shelbyUpload...)
+// thất bại — tránh việc user bị trừ quota mà bài không thực sự được đăng.
+async function refundStoryQuota(wallet: string): Promise<void> {
+  const key = wallet.toLowerCase();
+  const sub = subsCache.get(key);
+  if (sub && sub.storyUsage.count > 0) {
+    sub.storyUsage.count--;
+    subsCache.set(key, sub);
+    // Không ghi Shelby — cùng lý do như checkAndConsumeStoryQuota() ở trên.
+  }
 }
 
 // Returns null if allowed, or an error message if the wallet is out of AI credits.
@@ -1317,8 +1351,21 @@ async function checkAndConsumeAiQuota(wallet: string): Promise<string | null> {
   }
   sub.aiUsage.count++;
   subsCache.set(wallet.toLowerCase(), sub);
-  persistSub(sub).catch(err => console.error("[quota] AI usage persist failed:", err));
+  // Không ghi Shelby ở đây — cùng lý do như checkAndConsumeStoryQuota().
   return null;
+}
+
+// Hoàn lại 1 lượt AI-quota đã trừ, dùng khi gọi Groq thất bại (thiếu API key,
+// Groq lỗi, network...) — tránh việc user Pro bị trừ quota mà không nhận
+// được câu trả lời nào.
+async function refundAiQuota(wallet: string): Promise<void> {
+  const key = wallet.toLowerCase();
+  const sub = subsCache.get(key);
+  if (sub && sub.aiUsage.count > 0) {
+    sub.aiUsage.count--;
+    subsCache.set(key, sub);
+    // Không ghi Shelby — cùng lý do như checkAndConsumeAiQuota() ở trên.
+  }
 }
 
 // ─── ADVERTISER CAMPAIGNS (Sponsored Pin / Feed) ────────────────────────────
