@@ -83,7 +83,7 @@ const TIME_TO_LIVE = 365 * 24 * 60 * 60 * 1_000_000;
 // is available, only PAY_COIN_TYPE + the amount-matching logic in
 // POST /api/subscribe need to change — everything else stays the same.
 
-const aptos = new Aptos(new AptosConfig({ network: Network.TESTNET }));
+const aptos = new Aptos(new AptosConfig({ network: Network.SHELBYNET }));
 
 const PAY_COIN_TYPE  = "0x1::aptos_coin::AptosCoin";
 const OCTAS_PER_APT  = 100_000_000;
@@ -221,6 +221,27 @@ async function shelbyUpload(blobName: string, payload: unknown): Promise<void> {
 
 function randomSuffix(len = 6): string {
   return crypto.randomBytes(len).toString("hex");
+}
+
+// ─── Per-key sequential lock ─────────────────────────────────────────────────
+// likes/comments là thao tác đọc-sửa-ghi (đọc state cũ, sửa, ghi đè lên Shelby
+// bằng 1 blob mới). Nếu 2 request cho CÙNG 1 storyId chạy chồng lấn, request
+// nào ghi lên Shelby xong SAU sẽ đè mất kết quả của request ghi xong TRƯỚC —
+// dữ liệu bị mất âm thầm dù cả 2 request đều trả về success. withKeyLock()
+// đảm bảo mọi thao tác đọc-sửa-ghi cho cùng 1 key chạy tuần tự, không chồng.
+const keyLocks = new Map<string, Promise<unknown>>();
+
+function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = keyLocks.get(key) ?? Promise.resolve();
+  const run = previous.then(fn, fn); // chạy sau khi lượt trước xong, dù thành công hay lỗi
+  const guarded = run.catch(() => {}); // giữ chain sống kể cả khi lượt này lỗi
+  keyLocks.set(key, guarded);
+  // Dọn map sau khi lượt này là lượt cuối cùng đang xếp hàng cho key này,
+  // tránh Map phình lên vô hạn theo số story/comment theo thời gian.
+  guarded.then(() => {
+    if (keyLocks.get(key) === guarded) keyLocks.delete(key);
+  });
+  return run;
 }
 
 async function shelbyUploadVersioned(key: string, payload: unknown): Promise<string> {
@@ -727,29 +748,36 @@ app.post("/api/stories/:id/like", async (req, res) => {
 
     if (!wallet) return res.status(400).json({ error: "Missing wallet" });
 
-    const likedBy = await getLikes(storyId);
-    const idx     = likedBy.findIndex(w => w.toLowerCase() === wallet.toLowerCase());
-    const action  = idx !== -1 ? "unliked" : "liked";
+    const result = await withKeyLock(`likes:${storyId}`, async () => {
+      const likedBy = await getLikes(storyId);
+      const idx     = likedBy.findIndex(w => w.toLowerCase() === wallet.toLowerCase());
+      const action  = idx !== -1 ? "unliked" : "liked";
 
-    if (idx !== -1) likedBy.splice(idx, 1);
-    else            likedBy.push(wallet);
+      if (idx !== -1) likedBy.splice(idx, 1);
+      else            likedBy.push(wallet);
 
-    likesCache.set(storyId, [...likedBy]);
-
-    try {
-      await persistLikes(storyId, likedBy);
-    } catch (persistErr: unknown) {
-      // Rollback in-memory cache so it doesn't drift from what's actually on Shelby.
-      console.error("[likes] persist failed:", persistErr);
-      if (idx !== -1) likedBy.push(wallet);
-      else            likedBy.splice(likedBy.indexOf(wallet), 1);
       likesCache.set(storyId, [...likedBy]);
-      return res.status(502).json({ error: "Could not save like to Shelby, please retry" });
-    }
 
-    res.json({ success: true, action, count: likedBy.length, likedBy });
+      try {
+        await persistLikes(storyId, likedBy);
+      } catch (persistErr: unknown) {
+        // Rollback in-memory cache so it doesn't drift from what's actually on Shelby.
+        console.error("[likes] persist failed:", persistErr);
+        if (idx !== -1) likedBy.push(wallet);
+        else            likedBy.splice(likedBy.indexOf(wallet), 1);
+        likesCache.set(storyId, [...likedBy]);
+        throw new Error("PERSIST_FAILED");
+      }
+
+      return { action, likedBy };
+    });
+
+    res.json({ success: true, action: result.action, count: result.likedBy.length, likedBy: result.likedBy });
 
   } catch (err) {
+    if (err instanceof Error && err.message === "PERSIST_FAILED") {
+      return res.status(502).json({ error: "Could not save like to Shelby, please retry" });
+    }
     console.error("[POST /api/stories/:id/like]", err);
     res.status(500).json({ error: "Server error" });
   }
@@ -832,8 +860,7 @@ app.post("/api/stories/:id/comments", async (req, res) => {
     if (!text?.trim()) return res.status(400).json({ error: "Comment content is missing." });
     if (text.trim().length > 280) return res.status(400).json({ error: "Comments can be up to 280 characters." });
 
-    const comments = await getComments(storyId);
-    const tierSub  = await getSub(wallet);
+    const tierSub = await getSub(wallet);
     const comment = {
       id:     crypto.randomUUID().replaceAll("-", "").slice(0, 12),
       wallet,
@@ -841,21 +868,30 @@ app.post("/api/stories/:id/comments", async (req, res) => {
       time:   Date.now(),
       tier:   effectiveTier(tierSub), // snapshot at comment time — used to render badge
     };
-    comments.push(comment);
-    commentsCache.set(storyId, [...comments]);
 
-    try {
-      await persistComments(storyId, comments);
-    } catch (persistErr: unknown) {
-      // Rollback in-memory cache so it doesn't drift from what's actually on Shelby.
-      console.error("[comments] persist failed:", persistErr);
-      comments.pop();
+    const comments = await withKeyLock(`comments:${storyId}`, async () => {
+      const comments = await getComments(storyId);
+      comments.push(comment);
       commentsCache.set(storyId, [...comments]);
-      return res.status(502).json({ error: "Could not save comment to Shelby, please retry" });
-    }
+
+      try {
+        await persistComments(storyId, comments);
+      } catch (persistErr: unknown) {
+        // Rollback in-memory cache so it doesn't drift from what's actually on Shelby.
+        console.error("[comments] persist failed:", persistErr);
+        comments.pop();
+        commentsCache.set(storyId, [...comments]);
+        throw new Error("PERSIST_FAILED");
+      }
+
+      return comments;
+    });
 
     res.json({ success: true, comment, count: comments.length });
   } catch (err) {
+    if (err instanceof Error && err.message === "PERSIST_FAILED") {
+      return res.status(502).json({ error: "Could not save comment to Shelby, please retry" });
+    }
     console.error("[POST /api/stories/:id/comments]", err);
     res.status(500).json({ error: "Server error" });
   }
