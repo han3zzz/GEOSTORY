@@ -14,6 +14,8 @@ import {
   AptosConfig,
   Ed25519PrivateKey,
   Network,
+  PrivateKey,
+  PrivateKeyVariants,
 } from "@aptos-labs/ts-sdk";
 
 import { ShelbyNodeClient } from "@shelby-protocol/sdk/node";
@@ -47,16 +49,31 @@ if (!process.env.VITE_SHELBY_ACCOUNT_ADDRESS)
 // ─── Shelby client ───────────────────────────────────────────────────────────
 
 const shelbyClient = new ShelbyNodeClient({
-  network: Network.TESTNET,
-  apiKey:  process.env.VITE_SHELBY_API_KEY,
+  network:   Network.SHELBYNET,
+  apiKey:    process.env.VITE_SHELBY_API_KEY,
+  // Nhiều request (đăng story, trừ quota, lưu comment/like...) đều dùng
+  // chung 1 signer account. Với transaction thường (sequence-number based),
+  // 2 request chạm chain gần như cùng lúc sẽ tranh nhau cùng 1 sequence
+  // number → lỗi "Transaction already in mempool with a different payload".
+  // orderless: true chuyển sang dùng nonce ngẫu nhiên (thay vì sequence
+  // number) cho mỗi giao dịch, cho phép gửi đồng thời an toàn.
+  orderless: true,
 });
 
+// AIP-80: SDK khuyến nghị private key phải ở dạng chuẩn "ed25519-priv-0x...".
+// Nếu biến môi trường đang lưu key ở dạng hex thô (không có tiền tố), format
+// lại cho đúng chuẩn để hết warning — không ảnh hưởng gì đến giá trị key.
+const formattedPrivateKey = PrivateKey.formatPrivateKey(
+  process.env.VITE_SHELBY_ACCOUNT_PRIVATE_KEY,
+  PrivateKeyVariants.Ed25519
+);
+
 const signer = Account.fromPrivateKey({
-  privateKey: new Ed25519PrivateKey(process.env.VITE_SHELBY_ACCOUNT_PRIVATE_KEY),
+  privateKey: new Ed25519PrivateKey(formattedPrivateKey),
 });
 
 const SHELBY_BASE =
-  "https://api.testnet.shelby.xyz/shelby/v1/blobs/" +
+  "https://api.shelbynet.shelby.xyz/shelby/v1/blobs/" +
   process.env.VITE_SHELBY_ACCOUNT_ADDRESS + "/";
 
 const TIME_TO_LIVE = 365 * 24 * 60 * 60 * 1_000_000;
@@ -151,13 +168,39 @@ async function shelbyFetchJSON<T = any>(
   }
 }
 
+// ─── Location hint (bắt buộc để tránh lỗi on-chain E_NO_LOCATION_SELECTED) ──
+// Account chưa từng ghi dữ liệu lên Shelby (chưa có "location preference")
+// PHẢI kèm theo locationHint/selectedLocation trong mỗi lần upload, nếu
+// không giao dịch registerBlob sẽ abort với Move error E_NO_LOCATION_SELECTED.
+// Ta lấy danh sách location đang hoạt động qua getLocationNames() một lần,
+// cache lại, và dùng location đầu tiên cho mọi lần upload sau đó.
+let _shelbyLocationCache: string | null = null;
+
+async function getShelbyLocationHint(): Promise<string | undefined> {
+  if (_shelbyLocationCache) return _shelbyLocationCache;
+  try {
+    const names = await shelbyClient.metadata.getLocationNames();
+    if (Array.isArray(names) && names.length > 0) {
+      _shelbyLocationCache = names[0];
+      console.log(`[shelby] using location hint: "${_shelbyLocationCache}"`);
+      return _shelbyLocationCache;
+    }
+    console.warn("[shelby] getLocationNames() returned no activated locations");
+  } catch (err) {
+    console.error("[shelby] could not fetch location names:", err);
+  }
+  return undefined;
+}
+
 async function shelbyUpload(blobName: string, payload: unknown): Promise<void> {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const locationHint = await getShelbyLocationHint();
   await shelbyClient.upload({
     blobData:         bytes,
     signer,
     blobName,
     expirationMicros: expiresAt(),
+    options: locationHint ? { locationHint } : undefined,
   });
 }
 
@@ -560,14 +603,7 @@ app.post("/api/stories", async (req, res) => {
       tier:        effectiveTier(tierSub), // snapshot at publish time — used to render badge
     };
 
-    try {
-      await shelbyUpload(blobName, post);
-    } catch (uploadErr) {
-      // Upload thất bại — hoàn lại quota vừa trừ, đừng để user mất 1 lượt
-      // free-story trong ngày mà bài không thực sự được đăng.
-      await refundStoryQuota(walletForQuota);
-      throw uploadErr;
-    }
+    await shelbyUpload(blobName, post);
     invalidateStoriesCache();
 
     res.json({
@@ -861,10 +897,8 @@ app.post("/api/ai/companion", async (req, res) => {
     if (quotaError) return res.status(403).json({ error: quotaError, upgradeRequired: true });
 
     const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
-      await refundAiQuota(wallet);
+    if (!apiKey)
       return res.status(500).json({ error: "GROQ_API_KEY has not been configured." });
-    }
 
     // ── Build context strings ──
     const place   = context?.placeName ?? "area being viewed";
@@ -926,25 +960,19 @@ Rules:
 
     if (!groqRes.ok) {
       console.error("[AI companion] Groq error:", groqData);
-      await refundAiQuota(wallet);
       return res.status(502).json({
         error: "Groq API error: " + (groqData?.error?.message ?? groqRes.status),
       });
     }
 
     const reply = groqData.choices?.[0]?.message?.content ?? "";
-    if (!reply) {
-      await refundAiQuota(wallet);
+    if (!reply)
       return res.status(502).json({ error: "No response from AI" });
-    }
 
     res.json({ reply });
 
   } catch (err) {
     console.error("[POST /api/ai/companion]", err);
-    // wallet có thể chưa được parse nếu lỗi xảy ra trước khi đọc body —
-    // req.body?.wallet an toàn hơn biến `wallet` (có thể chưa khai báo ở scope này).
-    if (req.body?.wallet) await refundAiQuota(req.body.wallet).catch(() => {});
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -1311,27 +1339,8 @@ async function checkAndConsumeStoryQuota(wallet: string): Promise<string | null>
   }
   sub.storyUsage.count++;
   subsCache.set(wallet.toLowerCase(), sub);
-  // KHÔNG ghi lên Shelby ở đây — persistSub() luôn tạo 1 blob MỚI (Shelby
-  // không cho ghi đè), nên nếu ghi mỗi lần tăng quota thì mỗi story đăng lên
-  // sẽ tạo thêm 1 blob "geostory_sub_..." vĩnh viễn chỉ để lưu 1 con số đếm.
-  // Counter chỉ cần sống trong bộ nhớ của phiên chạy hiện tại để chặn spam;
-  // dữ liệu THỰC SỰ quan trọng (tier, expiresAt, txHash, showAds) đã được
-  // ghi đúng lúc ở /api/subscribe và /api/settings/ads. Trade-off: nếu
-  // server restart, storyUsage.count reset về 0 — tối đa user được thêm vài
-  // lượt free/ngày, không phải lỗi nghiêm trọng.
+  persistSub(sub).catch(err => console.error("[quota] story usage persist failed:", err));
   return null;
-}
-
-// Hoàn lại 1 lượt story-quota đã trừ, dùng khi bước sau (shelbyUpload...)
-// thất bại — tránh việc user bị trừ quota mà bài không thực sự được đăng.
-async function refundStoryQuota(wallet: string): Promise<void> {
-  const key = wallet.toLowerCase();
-  const sub = subsCache.get(key);
-  if (sub && sub.storyUsage.count > 0) {
-    sub.storyUsage.count--;
-    subsCache.set(key, sub);
-    // Không ghi Shelby — cùng lý do như checkAndConsumeStoryQuota() ở trên.
-  }
 }
 
 // Returns null if allowed, or an error message if the wallet is out of AI credits.
@@ -1351,21 +1360,8 @@ async function checkAndConsumeAiQuota(wallet: string): Promise<string | null> {
   }
   sub.aiUsage.count++;
   subsCache.set(wallet.toLowerCase(), sub);
-  // Không ghi Shelby ở đây — cùng lý do như checkAndConsumeStoryQuota().
+  persistSub(sub).catch(err => console.error("[quota] AI usage persist failed:", err));
   return null;
-}
-
-// Hoàn lại 1 lượt AI-quota đã trừ, dùng khi gọi Groq thất bại (thiếu API key,
-// Groq lỗi, network...) — tránh việc user Pro bị trừ quota mà không nhận
-// được câu trả lời nào.
-async function refundAiQuota(wallet: string): Promise<void> {
-  const key = wallet.toLowerCase();
-  const sub = subsCache.get(key);
-  if (sub && sub.aiUsage.count > 0) {
-    sub.aiUsage.count--;
-    subsCache.set(key, sub);
-    // Không ghi Shelby — cùng lý do như checkAndConsumeAiQuota() ở trên.
-  }
 }
 
 // ─── ADVERTISER CAMPAIGNS (Sponsored Pin / Feed) ────────────────────────────
