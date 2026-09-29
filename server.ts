@@ -76,8 +76,6 @@ const SHELBY_BASE =
   "https://api.shelbynet.shelby.xyz/shelby/v1/blobs/" +
   process.env.VITE_SHELBY_ACCOUNT_ADDRESS + "/";
 
-const TIME_TO_LIVE = 365 * 24 * 60 * 60 * 1_000_000;
-
 // ─── Subscriptions config ────────────────────────────────────────────────────
 // Payment collected in APT (testnet) for now. Once shelbyUSD's coin/FA address
 // is available, only PAY_COIN_TYPE + the amount-matching logic in
@@ -144,10 +142,6 @@ function randomId(): string {
   return crypto.randomUUID().replaceAll("-", "");
 }
 
-function expiresAt(): number {
-  return Date.now() * 1000 + TIME_TO_LIVE;
-}
-
 async function shelbyFetchJSON<T = any>(
   blobName: string,
   timeoutMs = 6000
@@ -199,7 +193,6 @@ async function shelbyUpload(blobName: string, payload: unknown): Promise<void> {
     blobData:         bytes,
     signer,
     blobName,
-    expirationMicros: expiresAt(),
     options: locationHint ? { locationHint } : undefined,
   });
 }
