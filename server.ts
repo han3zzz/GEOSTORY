@@ -243,13 +243,36 @@ async function shelbyUploadVersioned(key: string, payload: unknown): Promise<str
   return blobName;
 }
 
-async function shelbyFetchVersioned<T = any>(key: string, timeoutMs = 6000): Promise<T | null> {
-  const address = process.env.VITE_SHELBY_ACCOUNT_ADDRESS!;
-  const account = AccountAddress.fromString(address);
+// ─── Liệt kê blob của account (SDK 0.9.x) ───────────────────────────────────
+// SDK 0.9.1 đã bỏ coordination.getAccountBlobs(); việc đọc/liệt kê giờ đi qua
+// indexer: shelbyClient.index.listObjectsByPrefix(). Hàm này giữ nguyên hình
+// dạng dữ liệu cũ ({ blobNameSuffix, creationMicros }) để phần code còn lại
+// không phải đổi. `key` của object chính là blobName không kèm tiền tố owner.
+async function listAccountBlobs(
+  prefix = ""
+): Promise<{ blobNameSuffix: string; creationMicros: number }[]> {
+  const owner = AccountAddress.fromString(process.env.VITE_SHELBY_ACCOUNT_ADDRESS!);
+  const out: { blobNameSuffix: string; creationMicros: number }[] = [];
+  const PAGE = 500;
+  let startAfterKey: string | undefined;
 
-  let blobs: Awaited<ReturnType<typeof shelbyClient.coordination.getAccountBlobs>>;
+  for (;;) {
+    const page = await shelbyClient.index.listObjectsByPrefix({
+      owner, prefix, startAfterKey, limit: PAGE,
+    });
+    for (const o of page) {
+      out.push({ blobNameSuffix: o.key, creationMicros: Number(o.committedAtMicros) });
+    }
+    if (page.length < PAGE) break;
+    startAfterKey = page[page.length - 1].key;
+  }
+  return out;
+}
+
+async function shelbyFetchVersioned<T = any>(key: string, timeoutMs = 6000): Promise<T | null> {
+  let blobs: Awaited<ReturnType<typeof listAccountBlobs>>;
   try {
-    blobs = await shelbyClient.coordination.getAccountBlobs({ account });
+    blobs = await listAccountBlobs(key + "_");
   } catch (err) {
     console.error(`[shelbyFetchVersioned] could not list blobs for prefix "${key}":`, err);
     // fallback: may be old data written before this patch, under the fixed key itself
@@ -646,8 +669,7 @@ app.get("/api/stories", async (req, res) => {
   }
 
   try {
-    const account = AccountAddress.fromString(address);
-    const blobs   = await shelbyClient.coordination.getAccountBlobs({ account });
+    const blobs = await listAccountBlobs("geostory_post_");
 
     const posts = blobs
       .filter(b => b.blobNameSuffix.startsWith("geostory_post_"))
@@ -690,8 +712,7 @@ app.get("/api/stories/feed", async (_req, res) => {
   const address = process.env.VITE_SHELBY_ACCOUNT_ADDRESS!;
 
   try {
-    const account = AccountAddress.fromString(address);
-    const blobs   = await shelbyClient.coordination.getAccountBlobs({ account });
+    const blobs = await listAccountBlobs("geostory_post_");
 
     const posts = blobs
       .filter(b => b.blobNameSuffix.startsWith("geostory_post_"))
